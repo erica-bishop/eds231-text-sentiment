@@ -1,0 +1,257 @@
+---
+title: "Lab 1: NYT API"
+author: "Erica Bishop"
+date: "2023-04-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(jsonlite) #convert results from API queries into R-friendly formats
+library(plyr) # I don't know why rbind.fill isn't in dplyr
+library(tidyverse)
+library(tidytext) #text data management and analysis
+library(ggplot2) #plot word frequencies and publication dates
+library(lubridate)
+library(zoo)
+
+#key stored in file outside of repo
+API_KEY <- NYT_KEY
+
+```
+
+## Assignment (Due Tuesday 4/11 11:59pm)
+
+1.  Create a free New York Times account (<https://developer.nytimes.com/get-started>)
+
+2.  Pick an interesting environmental key word(s) and use the {jsonlite} package to query the API. Pick something high profile enough and over a large enough time frame that your query yields enough articles for an interesting examination.
+
+**keywords: "electric vehicle"**
+
+```{r eval=FALSE}
+
+#search term
+term1 <- "electric+vehicle"
+
+#time frame
+#initially searched back to 2018, 961 will take waayyyyy to long so using shorter time frame
+begin_date <- "20220101"
+end_date <- "20230412"
+
+#create the query url with search terms and API operators
+baseurl <- paste0("http://api.nytimes.com/svc/search/v2/articlesearch.json?q=",term1,"&begin_date=",begin_date,"&end_date=",end_date,"&facet_filter=true&api-key=",API_KEY, sep="")
+
+#take a look at the url
+baseurl
+
+#send the request, receive the response, and flatten
+#initiate a list to hold results of our for loop
+pages <- list()
+
+#find total hits from JSON object to determine how many pages to search
+initialQuery <- fromJSON(baseurl)
+maxPages <- round((initialQuery$response$meta$hits[1] / 10)-1) 
+#initiate a list to hold results of our for loop
+pages <- list()
+
+#loop
+for(i in 0:maxPages){
+  nytSearch <- fromJSON(paste0(baseurl, "&page=", i), flatten = TRUE) %>% data.frame() 
+  message("Retrieving page ", i)
+  pages[[i+1]] <- nytSearch 
+  Sys.sleep(20) 
+}
+
+#output is list of dataframe results on each page (pages object)
+#bind pages together
+# results_df <- do.call("rbind", pages) #error because numbers of columns of arguments don't match
+
+# Identify the unique column names across all data frames
+unique_cols <- unique(unlist(lapply(pages, colnames))) #33 unique columns
+
+#I THINK NYT must have changed how they tag / store data which is why there is inconsisitency...
+# Add columns with NA values to data frames that are missing certain columns
+results_df <- do.call("rbind.fill", pages)
+
+#remove columns that are entirely NA (y r they there??)
+#these are also for some reason in logical class no idea y but hopefully no problem to remove
+results_df <- results_df |> 
+  select(-c("response.docs.headline.content_kicker", "response.docs.headline.name", "response.docs.headline.seo", "response.docs.headline.sub"))
+
+#save output to not have to trouble with API again
+saveRDS(results_df, "results_df.rds")
+
+```
+
+
+```{r}
+#read in again
+ev_dat <- readRDS("results_df.rds")
+```
+
+3.  Recreate the publications per day and word frequency plots using the first paragraph (response.docs.lead_paragraph).  This time filter on the response.docs.news_desk variable to winnow out irrelevant results.
+
+-   Make some (at least 3) transformations to the corpus (add context-specific stopword(s), stem a key term and its variants, remove numbers)
+
+### Publications per month 
+Daily was not useful at all - basically 0, 1, or 2 per day. More interesting to see monthly trends.
+
+```{r message=FALSE}
+#filter results to just some of the most relevant sections
+ev_dat<- ev_dat |> 
+  filter(response.docs.news_desk %in% c("OpEd", "Business", "Climate", "Foreign", "Politics", "Investigative", "Opinion", "Editorial", "World", "Science"))
+
+#p#rep data for plotting
+ev_dat_monthly <- ev_dat |> 
+  rename(pubDay = response.docs.pub_date) |>
+  mutate(pubDay = lubridate::ymd_hms(pubDay)) |> 
+  mutate(pubMon = as.yearmon(pubDay)) |> 
+  group_by(pubMon) |> 
+  summarise(article_count = n())
+
+#plot
+time_paragraph_plot <- ggplot() +
+  geom_bar(data = ev_dat_monthly,
+       aes(x = reorder(pubMon, article_count),
+           y = article_count),
+       stat = "identity",
+       fill = "lightblue") +
+  coord_flip() +
+  labs(
+    title = "Number of NYT articles published each month mentioning 'electric vehicle'",
+    y = "Article count", #need to flip labs to bc of coord_flip
+    x = "Month"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+time_paragraph_plot
+```
+
+### Word Frequency
+
+```{r message=FALSE}
+
+paragraph <- names(ev_dat)[6] #pull our just first paragraph - response.doc.lead_paragraph (sixth column)
+
+#use tidytex::unnest_tokens to put in tidy form 
+tokenized_words <- ev_dat |> 
+unnest_tokens(word, paragraph) #word is the new column, paragraph is the source
+
+#tokenized_words[,"word"] #now can see list of common words in the results
+
+#remove common stop words
+# Clean out stop words- common words that don't mean anything
+data(stop_words)
+#stop_words
+
+#remove common stop words
+clean_words <- tokenized_words |> 
+  anti_join(stop_words, by = "word")
+
+#take a look at word frequencies
+word_frequencies <- clean_words |> 
+  group_by(word) |> 
+  summarise(count = n())
+
+#create df of stop words that are most frequent but not relevant to topic
+more_words <- c("monday", "tuesday", "wednesday", "thursday", "friday", "york", "time", "times", 
+                "world", "country", "city", "it's", "week", "weeks", "month", "months",
+                "day", "days", "ago", "hear", "officials", "president", "biden", "washington", "united",
+                "people", "global", "it’s", "u.s", "biden's")
+
+more_words <- as.data.frame(more_words) |> 
+  rename(word = more_words)
+
+#anti join again
+clean_words <- anti_join(clean_words, more_words, by = "word") #remove more stop words
+#tokenizing:
+# combine car and cars / vehicle and vehicles / company/companies
+clean_words$word <- gsub("car|cars", "car", clean_words$word, ignore.case = TRUE)
+clean_words$word <- gsub("vehicle|vehicles", "vehicle", clean_words$word, ignore.case = TRUE)
+clean_words$word <- gsub("company|companies", "company", clean_words$word, ignore.case = TRUE)
+#combine elon and musk
+clean_words$word <- gsub("elon|musk", "elon musk", clean_words$word, ignore.case = TRUE)
+
+#now remove all numeric strings
+clean_words <- clean_words |> 
+  mutate(word = str_remove_all(clean_words$word, "[:digit:]")) |> 
+  filter(!word %in% c("", ".", ",", " ")) #remove blanks
+
+#PLOT
+# Plot 
+wf_paragraph_plot <- clean_words |> 
+  count(word, sort = TRUE)  |> 
+  filter(n > 25) |> 
+  mutate(word = reorder(word, n)) |> 
+  ggplot(aes(n, word)) +
+  geom_col() +
+  labs(x = "Count of occurrences", y = NULL, title = "Word frequencies in first paragraphs of articles related to EVs") + 
+  theme_minimal()
+
+```
+
+```{r}
+wf_paragraph_plot
+```
+
+
+4.  Recreate the publications per day and word frequency plots using the headlines variable (response.docs.headline.main). Compare the distributions of word frequencies between the first paragraph and headlines. Do you see any difference?
+
+
+### word frequency in headlines
+```{r message=FALSE}
+
+headlines <- names(ev_dat)[21] #pull our just first paragraph - response.doc.lead_paragraph (sixth column)
+
+#use tidytex::unnest_tokens to put in tidy form 
+tokenized_words_h <- ev_dat |> 
+unnest_tokens(word, headlines) #word is the new column, paragraph is the source
+
+# tokenized_words_h[,"word"] #now can see list of common words in the results
+
+#remove common stop words
+clean_headlines <- tokenized_words_h |> 
+  anti_join(stop_words, by = "word")
+#anti join again with custome stop words (same df as for paragraphs)
+clean_headlines <- anti_join(clean_headlines, more_words, by = "word")
+
+#tokenizing:
+# combine car and cars / vehicle and vehicles / company/companies
+clean_headlines$word <- gsub("car|cars", "car", clean_headlines$word, ignore.case = TRUE)
+clean_headlines$word <- gsub("vehicle|vehicles", "vehicle", clean_headlines$word, ignore.case = TRUE)
+clean_headlines$word <- gsub("company|companies", "company", clean_headlines$word, ignore.case = TRUE)
+#combine elon and musk
+clean_headlines$word <- gsub("elon|musk", "elon musk", clean_headlines$word, ignore.case = TRUE)
+
+#now remove all numeric strings
+clean_words <- clean_words |> 
+  mutate(word = str_remove_all(clean_words$word, "[:digit:]")) |> 
+  filter(!word %in% c("", ".", ",", " ")) #remove blanks
+
+#PLOT
+wf_headline_plot <- clean_headlines |> 
+  count(word, sort = TRUE)  |> 
+  filter(n > 10) |> 
+  mutate(word = reorder(word, n)) |> 
+  ggplot(aes(n, word)) +
+  geom_col() +
+  labs(x = "Count of occurrences", y = NULL, title = "Word frequencies in headlines of articles related to EVs") + 
+  theme_minimal()
+
+```
+
+```{r}
+
+wf_headline_plot
+
+wf_paragraph_plot
+
+```
+The words frequencies are very similar across headlines and the first paragraphs. The search terms "electric" and "vehcile" obviously show up high on the list, along with "car". I also expected to see the words like "climate", "energy", and "gas" show up high on the list. However, I was surprsied to see mentions of "elon musk" so frequently along with "tesla", but I suppose along with the words "sales" and "company" it speaks to the overwhelming news buzz around him and tesla for being one of the fastest growing car comapnies ever. 
+
+
+
