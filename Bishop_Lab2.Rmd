@@ -1,0 +1,298 @@
+---
+title: "Lab 2"
+author: "Erica Bishop"
+date: "4/17/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(LexisNexisTools)
+library(dplyr)
+library(readr)
+library(stringr)
+library(here)
+library(tidytext)
+library(tidyr) #pivot_wider()
+library(ggplot2)
+library(textdata) #needed for nrc sentiment
+```
+
+### Assignment (Due 4/18 by 11:59 PM)
+
+1.  Access the Nexis Uni database through the UCSB library: <https://www.library.ucsb.edu/research/db/211>
+2.  Choose a key search term or terms to define a set of articles.
+Searched for "Puget Sound orcas" over the last two years in just "news" items (all news types) and selected the "group duplicates" option.
+
+3.  Use your search term along with appropriate filters to obtain and download a batch of at least 100 full text search results (.docx).
+
+-   Guidance for {LexisNexisTools} : <https://github.com/JBGruber/LexisNexisTools/wiki/Downloading-Files-From-Nexis>
+
+4.  Read your Nexis article document into RStudio.
+
+```{r}
+#reading in all of the documents in one file
+all_files <- list.files(pattern = ".docx"
+                       , path = "/Users/ericabishop/Documents/MEDSspring/EDS231/orca_files"
+                       , full.names = TRUE
+                       , recursive = TRUE
+                       , ignore.case = TRUE)
+
+#reading in LexisNexis file
+LNT_dat <- lnt_read(all_files)
+
+```
+
+5.  This time use the full text of the articles for the analysis. First clean any artifacts of the data collection process (hint: this type of thing should be removed: "Apr 04, 2022( Biofuels Digest: <http://www.biofuelsdigest.com/> Delivered by Newstex"))
+
+```{r}
+# Separate data types into different dfs
+meta_df <- LNT_dat@meta
+articles_df <- LNT_dat@articles
+paragraphs_df <- LNT_dat@paragraphs
+
+```
+
+```{r}
+#clean to preserve just the full text + headlines of articles
+#because there are only 100 rows, can manually skim to see what needs to be removed altered
+#a lot of articles start with "Washington:" indicating that's where they were published, but don't want to entirely remove this word because most news is probably coming from Washington State
+
+articles_clean <- articles_df |> 
+  mutate_all(~str_remove(., "MIAMI (AP) — ") %>%  
+              str_remove(., "(TNStalk) -- ") %>%  
+              str_remove(., "SEATTLE - ") %>% 
+              str_remove(., "WASHINGTON, Dec. 16 -- ") %>% 
+              str_remove(., "By Associated Press ") %>% 
+              str_remove(., "WASHINGTON, Dec. 22 --" )  %>% 
+              str_remove(., "SEATTLE (AP) — ") %>% 
+              str_remove(., "(TNSPol) -- ") %>% 
+              str_remove(., "(TNSPol) -- ") %>% 
+              str_remove(., "Dec 20, 2022( Homeland Preparedness News: https://homelandprepnews.com Delivered by Newstex)   Shutterstock  ") %>% 
+              str_remove(., "Oct. 8—") %>% 
+              str_remove(., "Aug 05, 2022( Environmental Protection Agency News: https://www.epa.gov/newsroom Delivered by Newstex)   August 5, 2022   Contact Information   SEATTLE (August 5, 2022)—") %>% 
+              str_remove(., "By Michael Doyle This story was updated at 7:07 p.m. EST. ") %>% 
+              str_remove(., "Mar 14, 2023( Alaska Beacon: https://alaskabeacon.com/ Delivered by Newstex)") %>% 
+              str_remove(., "MIAMI - ") %>% 
+              str_remove(., "WASHINGTON, Dec. 8 -- ") %>% 
+              str_remove(., "Nov 23, 2022( Northwest Progressive Institute Advocate: http://www.nwprogressive.org/weblog/ Delivered by Newstex)") %>% 
+              str_remove(., "ABOARD THE SOUNDGUARDIAN, Puget Sound (AP) — ") %>% 
+              str_remove(., "TACOMA, Wash., Dec. 14 -- ") %>% 
+              str_remove(., "OLYMPIA - ") %>% 
+              str_remove(., "MOUNT VERNON - ") %>% 
+              str_remove(., "Aug 11, 2022( MarketBeat: https://www.marketbeat.com/ Delivered by Newstex)  ") %>% 
+              str_remove(., "Sep. 24")) |> 
+     # filter(!grepl("PREP BASKETBALL", Article)) |>  # #remove row 83 and 95, and 96 I have no idea how this article of highschool basketball scores wound up in search results?
+ #actually there mush be a team called the "orcas" so removing all rows where articels contain "PREP BASKETBALL"
+  #jk leaving it in because when df is different size code below won't run
+    mutate(Article = str_trim(Article)) #remove whitespace
+
+
+```
+
+6.  Explore your data a bit and replicate the analyses above presented in class.
+
+```{r }
+dat_tibble <-tibble(Date = meta_df$Date
+             , Headline = meta_df$Headline
+             , id = articles_clean$ID
+             , text = articles_clean$Article)
+```
+
+```{r get_bing}
+bing_sent <- get_sentiments('bing') #grab the bing sentiment lexicon from tidytext
+# head(bing_sent, n = 20)
+```
+
+```{r text_words}
+text_words <- dat_tibble %>% 
+  unnest_tokens(output = word,
+                input = text,
+                token = 'words')
+
+sent_words <- text_words %>% 
+  anti_join(stop_words
+            , by ='word') %>% 
+  inner_join(bing_sent
+             , by = 'word') %>% 
+  mutate(sent_num = case_when(sentiment == 'negative' ~ -1
+                              , sentiment == 'positive' ~ 1))
+```
+
+```{r mean_sent}
+sent_article <- sent_words %>%
+  group_by(Headline) %>% 
+  count(id
+        , sentiment) %>% 
+  pivot_wider(names_from = sentiment
+              , values_from = n
+              , values_fill = 0) %>% 
+  mutate(polarity = positive-negative)
+
+mean(sent_article$polarity)  
+```
+The mean sentiment is 0.9 - so very positive! yay!
+
+```{r plot_sent_scores}
+ggplot(data = sent_article,
+       aes(x = id)) +
+  theme_minimal() +
+  geom_col(aes(y = positive),
+           stat = 'identity',
+           fill = 'seagreen2',
+           alpha = 0.5) +
+  geom_col(aes(y = negative),
+           stat = 'identity',
+           fill = 'tomato1',
+           alpha = 0.5) +
+  theme(axis.title.y = element_blank()) +
+  labs(title = 'Sentiment Analysis of Orca Whales in Puget Sound',
+       y = 'Sentiment Score') +
+  theme(
+    axis.text.x = element_blank(), #ids aren't really useful in this viz
+  )
+
+```
+7.  Look at the nrc contribution to emotion by word plots. Identify and reclassify or remove at least one term that gives misleading results in your context.
+
+```{r message=FALSE}
+nrc_sent <- get_sentiments('nrc')
+
+nrc_word_counts <- text_words %>% 
+  anti_join(stop_words
+            , by ='word') %>% 
+  inner_join(nrc_sent) %>% 
+  count(word
+        , sentiment
+        , sort = T) %>% 
+  ungroup()
+
+
+```
+
+```{r}
+
+sent_counts <- text_words %>% 
+  anti_join(stop_words
+            , by ='word') %>% 
+  group_by(id) %>% 
+  inner_join(nrc_sent) %>% 
+  group_by(sentiment) %>% 
+  count(word
+        , sentiment
+        , sort = T)
+
+sent_plot <- sent_counts %>% 
+  group_by(sentiment) %>% 
+  slice_max(n, n = 10) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, n)) %>% 
+  ggplot(aes(n, word,
+             fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment,
+             scales = "free_y") +
+  labs(x = "Contribution to Sentiment",
+       y = NULL)
+
+#look at a list of sentiment words to get the full picture
+sent_words_list <- sent_counts %>% 
+  group_by(sentiment) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, n))
+
+sent_plot
+
+```
+"Troll" in these articles likely refers to the fishing technique, not the monster (although the fishing technique may also elicit anger) so I'll remove it. Also, the word "king" shows up 29 times, and I would guess that in this context its referring to king salmon. It's only classified as positive, which I think is actually the appropriate category for it regardless.
+I feel like most of the words that show up in the top 20 most influential on sentiment are all fairly well categorized in this context. However, because there were four random articles about highschool basketball scores,
+and the words "football", "academy", and "team" show up pretty high in the list, so I'll remove those terms. 
+```{r}
+sent_counts2 <- text_words %>%
+  anti_join(stop_words, by ='word') %>%
+  group_by(id) %>%
+  inner_join(nrc_sent) %>%
+  group_by(sentiment) %>%
+  count(word
+        , sentiment
+        , sort = T) |>
+  subset(!word %in% c("football", "academy", "team")) |> #remove irrelevant words
+  subset(!word == "troll")
+
+
+sent_counts2 %>% 
+  group_by(sentiment) %>% 
+  slice_max(n, n = 10) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, n)) %>% 
+  ggplot(aes(n,
+             word,
+             fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment,
+             scales = "free_y") +
+  labs(x = "Contribution to Sentiment",
+       y = NULL)
+
+
+
+```
+
+
+8.  Plot the amount of nrc emotion words as a percentage of all the emotion words used each day (aggregate text from articles published on the same day). How does the distribution of emotion words change over time? Can you think of any reason this would be the case?
+```{r}
+
+# create date column by joining dat_df and nrc_word_counts
+date_sent_words <- text_words %>%
+  inner_join(dat_tibble) %>%
+  anti_join(stop_words) %>%
+  inner_join(nrc_sent) 
+
+# Group by Date and sentiment to get the count of the number for words for each group
+date_sent_counts <- date_sent_words %>%
+  group_by(Date, sentiment) %>%
+  count()
+
+# Calculating the total number of words for each Date
+total_words_by_date <- date_sent_words %>%
+  group_by(Date) %>%
+  summarise(total_words = n())
+
+# Calculating the percentage of emotion words
+sent_percentage_by_date <- date_sent_counts %>%
+  left_join(total_words_by_date
+            , by = "Date") %>%
+  mutate(percentage = n / total_words * 100)
+
+# Plotting the distribution of emotion words over time
+
+main_plot <- ggplot(data = sent_percentage_by_date,
+       aes(x = Date,
+           y = percentage,
+           color = sentiment)) +
+  geom_line() +
+  labs(title = "Orca sentiment over the last two years",
+       subtitle = "Percentage of NRC Emotion Words per Day",
+       x = "Date",
+       y = "% of Emotion Words")
+
+main_plot
+
+facet_plot <- ggplot(data = sent_percentage_by_date,
+       aes(x = Date,
+           y = percentage,
+           color = sentiment)) +
+  geom_line() +
+  facet_wrap(~sentiment) +
+  labs(title = "Orca sentiment over the last two years",
+       subtitle = "Percentage of NRC Emotion Words per Day",
+       x = "Date",
+       y = "% of Emotion Words")
+
+facet_plot
+
+```
+
+
+The biggest takeaways from the plot above are that the main sentiment is and has consistently been positive over the last two years. Below positive, trust is the second most prevalent word - this tracks as the orcas of Puget Sound are generally beloved. However, the negative sentiment is also fairly prevalent, likely becuase of the multitude of threats to the southern resident whale population - lack of food and a low survival rate for calves. The only real discernible trend over the other sentiments is that there is seemingly more news coverage in the last year than in 2022, making the plots more noisy. 
+

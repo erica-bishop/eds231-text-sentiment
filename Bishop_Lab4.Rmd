@@ -1,0 +1,84 @@
+---
+title: "Lab 4"
+author: "Erica Bishop"
+date: "2023-05-09"
+output: html_document
+---
+
+```{r packages, include = FALSE}
+library(tidytext)
+library(tidyverse)
+library(tidymodels)
+library(textrecipes)
+library(naivebayes)
+library(discrim) # naive-bayes
+library(kernlab) #kernlab engine
+```
+
+Lab 4 Assignment: Due May 9 at 11:59pm
+
+```{r load_data, message=FALSE}
+
+urlfile ="https://raw.githubusercontent.com/MaRo406/EDS-231-text-sentiment/main/data/climbing_reports_model_dat.csv"
+incidents_df<-readr::read_csv(url(urlfile))
+
+```
+
+### 1. Select another classification algorithm
+
+I'll use a support vector machine classification model becuase SVM's are efficient where there are a lot of featuers (i.e. a lot of tokens - as in this text analysis). 
+
+### 2. Conduct an initial out-of-the-box model fit on the training data and prediction on the test test data.  Assess the performance of this initial model.
+
+```{r split data}
+#set seed for reproducibility
+set.seed(567)
+
+#transform data so category is two classes 
+incidents2class <- incidents_df %>% 
+  mutate(fatal = factor(if_else(is.na(Deadly),
+                                "non-fatal",
+                                "fatal")))
+
+#split data to train model
+incidents_split <- initial_split(incidents2class)
+
+incidents_train <- training(incidents_split)
+incidents_test <- testing(incidents_split)
+
+```
+
+```{r set model specifications}
+
+#set recipe
+recipe <- recipe(fatal ~ Text,
+       data = incidents_train) %>% 
+  step_tokenize(Text) %>% #turning each word in text into a different feature
+  step_tokenfilter(Text, max_tokens = 1000) %>%  #max_tokens argument limits to just most frequent words (number of features you want)
+  step_tfidf(Text) #term frequency individual document frequency takes into account tfdf metric
+
+
+#use default engine and tuning parameters
+svm_spec <- svm_linear() %>% 
+  set_engine("kernlab") %>% 
+  set_mode("classification")
+
+#bundle into a workflow
+svm_wf <- workflow() %>% 
+  add_recipe(recipe) %>% 
+  add_model(svm_spec)
+
+```
+
+```{r fit message=FALSE} 
+
+svm_fit <- svm_wf %>% 
+  fit(data = incidents_train)
+  
+```
+
+3. Select the relevant hyperparameters for your algorithm and tune your model.
+
+4. Conduct a model fit using your newly tuned model specification.  What are the terms most highly associated with non-fatal reports?  What about fatal reports? 
+
+5. Predict fatality of the reports in the test set.  Compare this prediction performance to that of the Naive Bayes and Lasso models.

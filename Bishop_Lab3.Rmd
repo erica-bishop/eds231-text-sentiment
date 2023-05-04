@@ -1,0 +1,386 @@
+---
+title: 'Lab 3: Topic Analysis'
+author: "Erica Bishop"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+
+library(quanteda)
+library(tm)
+library(topicmodels)
+library(ldatuning)
+library(tidyverse)
+library(tidytext)
+library(reshape2)
+library(slam)
+library(LexisNexisTools)
+library(LDAvis) #visualization 
+library("tsne") #matrix decomposition
+
+```
+
+### Assignment Lab 3:
+
+Due in 2 weeks: May 2 at 11:59PM
+
+For this assignment you'll the articles data you downloaded from Nexis
+Uni in Week 2.
+
+Changed search terms slightly to hopefully get rid of sports-related
+articles (Puget Sound AND Orcas AND NOT soccer)
+
+## Step 1
+
+1.  Create a corpus from your articles.
+
+```{r read in data, message=FALSE, warning=FALSE}
+
+#reading in all of the documents in one file
+all_files <- list.files(pattern = ".docx"
+                       , path = "/Users/ericabishop/Documents/MEDSspring/EDS231/lab3_docs"
+                       , full.names = TRUE
+                       , recursive = TRUE
+                       , ignore.case = TRUE)
+
+#reading in LexisNexis file
+LNT_dat <- lnt_read(all_files)
+
+# Separate data types into different dfs
+meta_df <- LNT_dat@meta
+articles_df <- LNT_dat@articles #this is the one to create a corpus from
+paragraphs_df <- LNT_dat@paragraphs
+
+#clean out some article headers / city words / dates
+articles_clean <- articles_df %>% 
+  mutate(Article = str_replace(Article, "Classification Language:.*", "")) %>%
+  mutate(Article = str_replace(Article, "Contact:.*", "")) %>%
+  mutate(Article = str_replace(Article, "Email:.*", "")) %>%
+  mutate(Article = str_replace(Article, "COMMENTS.*", "")) %>% 
+  mutate_all(~str_remove(., "MIAMI (AP) — ") %>%  
+              str_remove(., "(TNStalk) -- ") %>%  
+              str_remove(., "SEATTLE") %>% 
+              str_remove(., "WASHINGTON, Dec. 16 -- ") %>% 
+              str_remove(., "By Associated Press ") %>% 
+              str_remove(., "WASHINGTON, Dec. 22 --" )  %>% 
+              str_remove(., "SEATTLE (AP)") %>% 
+              str_remove(., "(TNSPol) -- ") %>% 
+              str_remove(., "(TNSPol) -- ") %>% 
+              str_remove(., "Dec 20, 2022( Homeland Preparedness News: https://homelandprepnews.com Delivered by Newstex)   Shutterstock  ") %>% 
+              str_remove(., "Oct. 8—") %>% 
+              str_remove(., "Aug 05, 2022( Environmental Protection Agency News: https://www.epa.gov/newsroom Delivered by Newstex)   August 5, 2022   Contact Information   SEATTLE (August 5, 2022)—") %>% 
+              str_remove(., "By Michael Doyle This story was updated at 7:07 p.m. EST. ") %>% 
+              str_remove(., "Mar 14, 2023( Alaska Beacon: https://alaskabeacon.com/ Delivered by Newstex)") %>% 
+              str_remove(., "MIAMI - ") %>% 
+              str_remove(., "WASHINGTON, Dec. 8 -- ") %>% 
+              str_remove(., "Nov 23, 2022( Northwest Progressive Institute Advocate: http://www.nwprogressive.org/weblog/ Delivered by Newstex)") %>% 
+              str_remove(., "ABOARD THE SOUNDGUARDIAN, Puget Sound (AP) — ") %>% 
+              str_remove(., "TACOMA, Wash., Dec. 14 -- ") %>% 
+              str_remove(., "OLYMPIA - ") %>% 
+              str_remove(., "MOUNT VERNON - ") %>% 
+              str_remove(., "Aug 11, 2022( MarketBeat: https://www.marketbeat.com/ Delivered by Newstex)  ") %>% 
+              str_remove(., "Sep. 24")) %>% 
+    mutate(Article = str_trim(Article)) #remove whitespace
+
+
+#saving as csv to read back in as spec_tbl_df
+write_csv(articles_clean, here::here("articles_df.csv")) 
+
+#now its the right class for corpus to work
+articles_tbl <- read_csv(here::here("articles_df.csv")) 
+
+```
+
+```{r corpus}
+
+articles_tbl <- articles_tbl %>% 
+   rename(text = Article) #rename column header to match
+
+corp_orcas <- corpus(x = articles_tbl, text_field = "text") # make the corpus
+
+articles_stats <- summary(corp_orcas) # grab some stats
+# articles_stats
+
+
+```
+
+## Step 2
+
+2.  Clean the data as appropriate.
+
+```{r tokenize_corpus}
+
+# extract words as tokens without punctuation or numbers
+toks <- tokens(corp_orcas, remove_punct = TRUE, remove_numbers = TRUE)
+
+ # add search terms as stop words
+add_stops <- c(stopwords("en"), "puget", "sound", "orcas")
+
+# remove stop words from token list
+toks1 <- tokens_select(toks, pattern = add_stops, selection = "remove")
+
+```
+
+```{r create dfm}
+
+dfm_orcas <- dfm(toks1, tolower = TRUE, remove_padding = TRUE)
+
+#words must occur in at least two documents to be included in analysis
+dfm <- dfm_trim(dfm_orcas, min_docfreq = 2) 
+
+# calculate sum of words then keep ones greater than zero
+sel_idx <- slam::row_sums(dfm) > 0
+dfm <- dfm[sel_idx,]
+
+```
+
+## Run models
+
+3.  Run three models (i.e. with 3 values of k) and select the overall
+    best value for k (the number of topics) - include some justification
+    for your selection: theory, FindTopicsNumber() optimization metrics,
+    interpretability, LDAvis. Select the best single value of k.
+
+```{r find_k}
+result <- FindTopicsNumber(dfm,
+                            topics = seq(from = 2, to = 20, by = 1),
+                            metrics = c("CaoJuan2009", "Deveaud2014", "Arun2010"),
+                            method = "Gibbs",
+                            verbose = T)
+
+# plot(result)
+
+head(result)
+
+FindTopicsNumber_plot(result)
+```
+
+According to ChatGPT: "CaoJuan2009": This metric is based on the
+coherence of each topic, which measures the semantic similarity between
+the words in a topic. Higher coherence scores indicate more coherent
+topics. "Deveaud2014": This metric is based on the exclusivity of each
+topic, which measures how distinct each topic is from the others. Higher
+exclusivity scores indicate more distinct topics. "Arun2010": This
+metric is based on the balance of each topic, which measures the
+similarity of the topic sizes. Higher balance scores indicate more
+balanced topics.
+
+Based on these three metrics, I can pick three optimal values of K: -
+The Arun metric is minimized with k = 20 - The CaoJuan metric is
+minimized at k = 19 - The Deveaud metric is maximized at k = 19
+
+To test out the very best value of K, I'll try models with k = 19, k =
+20, and another with a much lower value of k = 5 just to see since
+sometimes it feels like the words assigned to LDA models even when they
+are optimized don't make a lot of intuitive sense.
+
+```{r LDA_k2, message=FALSE}
+
+#first model with k = 5
+k <- 5
+
+topicModel_k5 <- LDA(dfm,
+                     k,
+                     method="Gibbs",
+                     control=list(iter = 500, verbose = 25))
+
+tmResult_k2 <- posterior(topicModel_k5)
+
+#show top ten terms from each of the two topics
+terms(topicModel_k5, 10)
+
+
+
+```
+
+```{r LDA_k5, message=FALSE}
+
+#model with k = 19
+k <- 19
+
+topicModel_k19 <- LDA(dfm,
+                     k,
+                     method="Gibbs",
+                     control=list(iter = 500, verbose = 25))
+
+tmResult_k19 <- posterior(topicModel_k19)
+
+#show top ten terms from each of the two topics
+terms(topicModel_k19, 10)
+
+##save the results to proceed with 19 as best value
+tmResult <- posterior(topicModel_k19)
+terms(topicModel_k19, 10)
+theta <- tmResult$topics
+beta <- tmResult$terms
+vocab <- (colnames(beta))
+
+
+```
+
+```{r LDA_k6, message=FALSE}
+
+#model with k = 20
+k <- 20
+
+topicModel_k20 <- LDA(dfm,
+                     k,
+                     method="Gibbs",
+                     control=list(iter = 500, verbose = 25))
+
+tmResult_k20 <- posterior(topicModel_k20)
+
+#show top ten terms from each of the two topics
+terms(topicModel_k20, 10)
+
+```
+
+The topis seem to have a lot of overlap, perhaps because my search terms
+to begin with were so narrow - perhaps a corpus that covers a wider
+range of topics to begin with would fair better?
+
+Looking at the terms in each topic, I would pick 19 as the single best
+value of k.
+
+## Step 4
+
+4.  Plot the top terms in each topic and the distribution of topics
+    across a sample of the documents (constrained by what looks good in
+    the plot).
+
+```{r top_terms_topic}
+
+orca_topics <- tidy(topicModel_k19, matrix = "beta")
+
+top_terms <-orca_topics %>% 
+  group_by(topic) %>%  
+  top_n(7, beta) %>%  
+  ungroup() %>% 
+  arrange(topic, -beta)
+  
+top_terms
+
+```
+
+```{r name topics}
+
+topic_words <- terms(topicModel_k19, 3) #take  words from each topic to names
+
+topic_names <- apply(topic_words, 2, paste, collapse = " ")
+
+```
+
+```{r plot_top_terms}
+
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic, sep = "")) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free_y") +
+  scale_x_reordered()+
+  coord_flip() +
+  labs(
+    title = "Top six terms in each topic"
+  )
+
+```
+
+```{r plot_topic_dists}
+
+example_ids <- c(1:4) #id for just a subset of first 4 documents (gets hard to read with more)
+
+n <- length(example_ids)
+
+# get topic proportions form example documents
+topicProportions <- theta[example_ids,]
+colnames(topicProportions) <- topic_names
+
+#create df of doc id, topic name, and proportion
+vizDF <- melt(cbind(data.frame(topicProportions), document = factor(1:n)),
+              variable.name = "topic",
+              id.vars = "document") 
+
+ggplot(
+  data = vizDF,
+  aes(x = topic,
+      y = value,
+      fill = document
+      )
+) +
+  geom_bar(stat = "identity") +
+  labs(
+    y = "Proportion"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  coord_flip() +
+  facet_wrap(~ document, ncol = n)
+
+## could continue to plot for next few documents, but instead might be more effective to look at interactive visualization
+
+
+```
+
+```{r plot with LDAvis}
+
+svd_tsne <- function(x) tsne(svd(x)$u)
+json <- createJSON(
+  phi = tmResult$terms, 
+  theta = tmResult$topics, 
+  doc.length = rowSums(dfm), 
+  vocab = colnames(dfm), 
+  term.frequency = colSums(dfm),
+  mds.method = svd_tsne,
+  plot.opts = list(xlab="", ylab="")
+)
+serVis(json)
+
+
+```
+
+## Step 5
+
+5.  Take a stab at interpreting the resulting topics. What are the key
+    themes discussed in the articles in your data base?
+
+```{r}
+print(topic_names)
+```
+
+Because I identified 19 topics (identified above with the top three
+terms in each) - there is a lot of overlap. I actually found the
+sentiment analysis (and just looking at the indiviudal word frequencies)
+a bit more intuitive and helpful than the topic analysis.
+
+Some general themes that came from these topics are:
+
+-   Funding and policy efforts (\$, million, will, recovery, federal,
+    act)
+
+-   Issues with noise pollution and the navy interfering with the
+    Southern Resident orcas (navy, noise, quiet)
+
+-   Issues with the orca's feed stocks and fisheries (salmon, chinook,
+    alaska, fish, aquaculture etc.)
+
+-   Issues with captive orcas and their re-release (Keiko, Lolita,
+    seaquarium, wild)
+
+-   Conservation and research (NOAA, health, species, endangered,
+    habitat)
+
+-   General info about the southern resident orca population (pod J,
+    orca, southern)
+
+Looking at the term frequency within each topic makes it easier to
+understand, but there is a lot of overlap. It's also interesting that
+the topics shift each time without setting a seed - which makes me think
+the topic delineation isn't necessarily strong enough for the method of
+initial randomization to always identify the same pattern.
