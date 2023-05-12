@@ -11,7 +11,7 @@ library(tidyverse)
 library(tidymodels)
 library(textrecipes)
 library(naivebayes)
-library(discrim) # naive-bayes
+# library(discrim) # naive-bayes
 library(kernlab) #kernlab engine
 ```
 
@@ -59,9 +59,11 @@ recipe <- recipe(fatal ~ Text,
 
 
 #use default engine and tuning parameters
-svm_spec <- svm_linear() %>% 
+svm_spec <- svm_rbf() %>% 
   set_engine("kernlab") %>% 
-  set_mode("classification")
+  set_mode("classification") # %>% 
+# translate()
+# might have to use 'translate'
 
 #bundle into a workflow
 svm_wf <- workflow() %>% 
@@ -70,15 +72,152 @@ svm_wf <- workflow() %>%
 
 ```
 
-```{r fit message=FALSE} 
+```{r fit, message=FALSE} 
 
 svm_fit <- svm_wf %>% 
   fit(data = incidents_train)
   
 ```
 
-3. Select the relevant hyperparameters for your algorithm and tune your model.
+```{r resampling evaluation}
+#resampling because relatively small dataset
+#use default 10-fold cross validation
+incidents_fold <- vfold_cv(incidents_train)
 
-4. Conduct a model fit using your newly tuned model specification.  What are the terms most highly associated with non-fatal reports?  What about fatal reports? 
+#fit data to resamples
+svm_rs_fit <- fit_resamples(
+  svm_wf, 
+  incidents_fold,
+  control = control_resamples(save_pred = T)
+)
 
-5. Predict fatality of the reports in the test set.  Compare this prediction performance to that of the Naive Bayes and Lasso models.
+```
+
+
+```{r metrics}
+
+svm_rs_metrics <- collect_metrics(svm_rs_fit)
+svm_rs_predictions <- collect_predictions(svm_rs_fit)
+
+#print out a cute table
+gt::gt(svm_rs_metrics,
+       caption = "SVM model performance with 10-fold cross validation")
+
+```
+
+```{r ROC plot}
+svm_rs_predictions |> 
+  group_by(id) |> 
+  roc_curve(truth = fatal, .pred_fatal) |> 
+  autoplot() +
+  labs("Resamples", 
+       title = "ROC curve for Climbing Incident Reports")
+
+
+```
+
+```{r confustion matrix}
+
+conf_mat_resampled(svm_rs_fit, tidy = FALSE) |> 
+  autoplot(type = "heatmap") +
+scale_fill_gradient(low = "#ffffff", high = "#1cfc90")
+
+
+
+```
+In the confuston matrix above, we can see that the model accurately classified most of the non-fatal climbin accidents, however it misclassified 27 fatal accidents as fatal.
+
+### 3. Select the relevant hyperparameters for your algorithm and tune your model.
+
+For support vector machine models, the cost parameter can be tuned to determine how high the penalty for misclassification is. The default value, used above, is 1, but values can range from 0.01 to 1000.  Cost is the parameter (C) that softens or hardens the margin of the hyperplane and controls the bias variance tradeoff. 
+
+The margin parameter for SVM only applies to regression models, so below I am only tuning cost.
+
+```{r tuning, cache=TRUE}
+#set up model spec again to tune cost
+svm_tune_spec <- svm_rbf(
+  cost = tune()
+) %>% 
+  set_engine("kernlab") %>% 
+  set_mode("classification")
+
+#set up search grid
+set.seed(345) #set seed again for grid generation
+#took way to long to run with 100, going to 30
+cost_grid <- grid_regular(cost(), levels = 30) #no transformation used for now
+
+#make another wf
+svm_tune_wf <- workflow() %>% 
+  add_recipe(recipe) %>% 
+  add_model(svm_tune_spec)
+
+#use tune_grid to find optimal cost parameter
+#use the resamples created above
+
+#tune in parallel to run faster
+doParallel::registerDoParallel()
+#taking out grid and using default latin hypercube maybe faster???
+tune_rs <- tune_grid(
+  svm_tune_wf,
+  resamples = incidents_fold,
+  # grid = cost_grid,
+  control = control_resamples(save_pred = T)
+)
+
+```
+
+```{r tuning_metrics}
+
+collect_metrics(tune_rs)
+autoplot(tune_rs) +
+  labs(
+    title = "SVM Performance Across Cost Penalities"
+  )
+
+```
+It's odd that ROC and accuracy don't align in the cost value that optimizes the model. In this case, I'm going to go with accuracy (by why are they so different??? Is it because I abandoned my tuning grid in favor of the default?)
+
+```{r select best cost}
+
+#select best cost parameter based on accuracy metric
+tune_rs %>% 
+  show_best("accuracy")
+#best cost for accuracy is about 3.2
+
+#for comparison look at ROC
+tune_rs %>% 
+  show_best("roc_auc")
+#best cost is about 0.655
+
+#select the best one - by one std error picks simplest model within one std error of numerically best
+#I think by_one_std_error will minimize difference in optimum cost between roc and accuracy
+opt_cost <- tune_rs %>%  
+  select_by_one_std_err(metric = "accuracy", -cost)
+
+
+```
+
+
+### 4. Conduct a model fit using your newly tuned model specification.  What are the terms most highly associated with non-fatal reports?  What about fatal reports?
+
+SVM models don't allow for easy variable importance assessment or extracton - I couldn't get extract, VIP or other methods to work here. 
+
+```{r final fit}
+#finalize workflow
+final_svm <- finalize_workflow(svm_tune_wf, opt_cost)
+
+#fit data to tuned model
+fitted_svm <- fit(final_svm, incidents_train)
+
+```
+
+
+### 5. Predict fatality of the reports in the test set.  Compare this prediction performance to that of the Naive Bayes and Lasso models.
+
+```{r fit test}
+
+last_fit(final_svm, incidents_split) |> 
+  collect_metrics()
+
+```
+The accuracy for my svm model was about 87% and the ROC metric was about 0.89 - This is similar but a slightly lower accuracy and ROC than the lasso model, but a slight improvement over the naieve bayes model from class. 
