@@ -110,12 +110,13 @@ Then we convert to a matrix so we can use matrix factorization and reduce the di
 
 ```{r pmi}
 
+#calculate pmi (using log 10?)
 pmi_matrix <- normalized_prob %>% 
   mutate(pmi = log10(p_together)) %>% 
   #go from tidy to sparse matrix
   cast_sparse(word1, word2, pmi)
 
-#pretty big matrix
+#this matrix is just 713 x 713 (smaller than climbing one)
 dim(pmi_matrix)
 
 

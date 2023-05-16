@@ -135,7 +135,7 @@ rownames(word_vectors) <- rownames(pmi_matrix) #set rownames so we know what tho
 
 The words most closely related to my search terms (puget sound orcas) pop up the most, but I want to look into some subtopics:
 
--    salmon
+-   salmon
 
 -   noise
 
@@ -175,7 +175,6 @@ ggplot(data = salmon_10,
 
 ```
 
-
 ```{r noise words}
 
 noise <- search_synonyms(word_vectors,
@@ -199,7 +198,6 @@ ggplot(data = noise_10,
 
 
 ```
-
 
 ```{r captivity words}
 
@@ -249,15 +247,127 @@ gt::gt(head(navy_words))
 
 ```
 
-The word math definitely spits out similar words, but I think they are all so tightly linked in a small dataset on a very limited topc. The navy + pollution word math I think had the most specific and interesting results. The fish + chinook also output salmon as the top result which is cool - although some of the other words were less meaningful. 
+The word math definitely spits out similar words, but I think they are all so tightly linked in a small dataset on a very limited topc.
+The navy + pollution word math I think had the most specific and interesting results.
+The fish + chinook also output salmon as the top result which is cool - although some of the other words were less meaningful.
 
-#### Pretrained Embeddings
+## Pretrained Embeddings
 
-4.  Following the example in the SMLTR text (section 5.4), create a set of 100-dimensional GloVe word embeddings.
-    These embeddings were trained by researchers at Stanford on 6 billion tokens from Wikipedia entries.
+### 4. Following the example in the SMLTR text (section 5.4), create a set of 100-dimensional GloVe word embeddings.These embeddings were trained by researchers at Stanford on 6 billion tokens from Wikipedia entries.
+
+```{r download}
+
+options(timeout = 500)
+glove6b <- embedding_glove6b(dimensions = 100)
+
+beepr::beep(8)
+
+```
+
+```{r tidy}
+
+#tidy data into more workable format
+tidy_glove <- glove6b %>% #currently all columns except doken start with d#
+  pivot_longer(contains("d"),
+               names_to = "dimension"
+  ) %>% 
+  rename(item1 = token)
+```
+
+```{r nearest neighbors}
+
+#using nearest neighbors function from SMLTAR instead of search_synonyms, although will try both to compare
+nearest_neighbors <- function(df, token) {
+  df %>%
+    widely(
+      ~ {
+        y <- .[rep(token, nrow(.)), ]
+        res <- rowSums(. * y) / 
+          (sqrt(rowSums(. ^ 2)) * sqrt(sum(.[token, ] ^ 2)))
+        matrix(res, ncol = 1, dimnames = list(x = names(res)))
+      },
+      sort = TRUE,
+      maximum_size = NULL
+    )(item1, dimension, value) %>%
+    select(-item2)
+}
+
+```
+
+Match up the words in my small data set about whaltes with the glove6b words
+
+```{r}
+#first make word matrix a df so it can be joined
+orca_word_df <- as.data.frame(word_vectors) %>% 
+  cbind(word = rownames(orca_word_df)) %>% 
+  relocate(word, .before = V1) %>% 
+  pivot_longer(contains("V"),
+               names_to = "dimension")
+
+#make sure orca matrix is in same format for joining
+word_matrix_df <- orca_word_df %>%
+  inner_join(by = "word",
+             tidy_glove %>%
+               distinct(word)) %>%
+  count(word) %>%
+  cast_sparse(word, n)
+
+
+#create glove matrix
+glove_matrix <- tidy_glove %>%
+  inner_join(by = "item1",
+             orca_word_df %>%
+               distinct(word) %>%
+               rename(item1 = word)) %>%
+  cast_sparse(item1, dimension, value)
+
+
+)
+
+
+
+```
 
 5.  Test them out with the cannonical word math equation on the GloVe embeddings: "berlin" - "germany" + "france" = ?
 
-6.  Recreate parts 2 and 3 above using the the GloVe embeddings in place of the ones you trained.
-    How do they compare?
-    What are the implications for applications of these embeddings?
+```{r}
+
+##using the search_synonyms function
+nn_test1 <- tidy_glove["berlin",] - tidy_glove["germany",] + tidy_glove["france"]
+
+
+
+#maybe ocean or wwater for Puget Sound?
+puget_sound <- word_vectors["puget",] + word_vectors["sound",]
+#search for synonyms
+puget_sound_words <- search_synonyms(word_vectors, puget_sound)
+gt::gt(head(puget_sound_words)) #print table
+
+#maybe fish plus chinook is salmon?
+fish_chinook <- word_vectors["fish",] + word_vectors["chinook",]
+fish_words <- search_synonyms(word_vectors, fish_chinook)
+gt::gt(head(fish_words))
+
+#will navy + pollution = noise?
+navy_pollution <- word_vectors["navy",] + word_vectors["pollution",]
+navy_words <- search_synonyms(word_vectors, navy_pollution)
+gt::gt(head(navy_words))
+
+
+```
+
+6.  Recreate parts 2 and 3 above using the the GloVe embeddings in place of the ones you trained. How do they compare? What are the implications for applications of these embeddings?
+
+```{r finding synonyms}
+
+
+
+```
+
+
+```{r word math with glove6b}
+
+
+
+```
+
